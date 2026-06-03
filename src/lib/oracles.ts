@@ -20,64 +20,134 @@ export type OracleListing = {
 };
 
 const STORAGE_KEY = "blackbox-oracle-listings";
+const MAX_TEXT_LENGTH = 1200;
+const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
+const HASH_RE = /^0x[a-fA-F0-9]{64}$/;
+const PRICE_WEI_RE = /^\d+$/;
 
 export const seedOracles: OracleListing[] = [
   {
     id: "seed-1",
-    title: "The Anti-Resume Oracle",
-    category: "Hiring Signal",
+    title: "Backchannel Deal Signal",
+    category: "Private Research",
     publicTease:
-      "A private rubric that predicts whether a founder will actually ship. Buyers get the answer, never the underlying notes.",
+      "A sealed diligence note for one startup deal. Buyers unlock the verdict, not the source notes.",
     priceLabel: "0.08 IP",
-    weirdness: "Reads like a personality test, behaves like a sealed data market.",
+    weirdness: "Turns private research into a paid answer while the evidence stays sealed.",
     createdAt: "2026-05-27T00:00:00.000Z",
   },
   {
     id: "seed-2",
-    title: "Leakless Alpha Desk",
-    category: "Private Research",
+    title: "Anonymous Creator Tip",
+    category: "Creator Intel",
     publicTease:
-      "Encrypted market notes that can be queried for one answer at a time. The dataset stays boxed.",
+      "A behind-the-scenes sponsorship signal. Unlock the actionable takeaway without exposing the source conversation.",
     priceLabel: "0.15 IP",
-    weirdness: "A vending machine for secrets that refuses to hand over the warehouse.",
+    weirdness: "A gossip-shaped product with a privacy boundary instead of a screenshot dump.",
     createdAt: "2026-05-27T00:00:00.000Z",
   },
   {
     id: "seed-3",
-    title: "Ghost Co-Founder",
-    category: "Agent Memory",
+    title: "Blind Item Drop",
+    category: "Entertainment Intel",
     publicTease:
-      "A private decision journal for an autonomous agent. Unlocks only when the right wallet satisfies the condition.",
-    priceLabel: "license gated",
-    weirdness: "The app has a private brain and you can negotiate with its memory.",
+      "A verified behind-the-scenes tip with the names and screenshots sealed. Buyers unlock the answer, not the source trail.",
+    priceLabel: "0.05 IP",
+    weirdness: "Celebrity tea with a privacy boundary: the claim can be sold without dumping the receipts.",
     createdAt: "2026-05-27T00:00:00.000Z",
   },
 ];
 
-export function loadListings() {
+function cleanText(value: unknown, fallback = "") {
+  return String(value ?? fallback).trim().slice(0, MAX_TEXT_LENGTH);
+}
+
+function cleanAddress(value: unknown): Address | undefined {
+  const cleaned = cleanText(value);
+  return ADDRESS_RE.test(cleaned) ? (cleaned as Address) : undefined;
+}
+
+function cleanHash(value: unknown): Hash | undefined {
+  const cleaned = cleanText(value);
+  return HASH_RE.test(cleaned) ? (cleaned as Hash) : undefined;
+}
+
+function cleanPriceWei(value: unknown) {
+  const cleaned = cleanText(value);
+  return PRICE_WEI_RE.test(cleaned) ? cleaned : undefined;
+}
+
+function cleanVaultUuid(value: unknown) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function cleanCreatedAt(value: unknown) {
+  const date = new Date(cleanText(value));
+  return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
+}
+
+function cleanAccessMode(value: unknown): OracleListing["accessMode"] {
+  return value === "owner-only" || value === "paid" ? value : undefined;
+}
+
+export function cleanListing(value: unknown): OracleListing | undefined {
+  const record = value as Partial<Record<keyof OracleListing, unknown>> | undefined;
+  const id = cleanText(record?.id);
+  const title = cleanText(record?.title);
+  const publicTease = cleanText(record?.publicTease);
+
+  if (!id || !title || !publicTease) return undefined;
+
+  return {
+    id,
+    title,
+    category: cleanText(record?.category, "Private Insight"),
+    publicTease,
+    priceLabel: cleanText(record?.priceLabel, "0.10 IP"),
+    weirdness: cleanText(record?.weirdness, "A sealed answer that exists before anyone can see it."),
+    owner: cleanAddress(record?.owner),
+    vaultUuid: cleanVaultUuid(record?.vaultUuid),
+    allocateTx: cleanHash(record?.allocateTx),
+    writeTx: cleanHash(record?.writeTx),
+    configureTx: cleanHash(record?.configureTx),
+    buyTx: cleanHash(record?.buyTx),
+    conditionContract: cleanAddress(record?.conditionContract),
+    priceWei: cleanPriceWei(record?.priceWei),
+    accessMode: cleanAccessMode(record?.accessMode),
+    createdAt: cleanCreatedAt(record?.createdAt),
+  };
+}
+
+function readSavedListings() {
   const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) return seedOracles;
+  if (!raw) return [];
 
   try {
-    const saved = JSON.parse(raw) as OracleListing[];
-    return mergeListings([...saved, ...seedOracles]);
+    const saved = JSON.parse(raw);
+    return Array.isArray(saved) ? saved.flatMap((listing) => cleanListing(listing) ?? []) : [];
   } catch {
-    return seedOracles;
+    return [];
   }
 }
 
+export function loadListings() {
+  return mergeListings([...readSavedListings(), ...seedOracles]);
+}
+
 export function saveUserListing(listing: OracleListing) {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  const current = raw ? (JSON.parse(raw) as OracleListing[]) : [];
-  localStorage.setItem(STORAGE_KEY, JSON.stringify([listing, ...current]));
+  const cleaned = cleanListing(listing);
+  if (!cleaned) throw new Error("Listing metadata is incomplete.");
+  localStorage.setItem(STORAGE_KEY, JSON.stringify([cleaned, ...readSavedListings()]));
 }
 
 export function updateUserListing(updated: OracleListing) {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  const current = raw ? (JSON.parse(raw) as OracleListing[]) : [];
+  const cleaned = cleanListing(updated);
+  if (!cleaned) throw new Error("Listing metadata is incomplete.");
+  const current = readSavedListings();
   localStorage.setItem(
     STORAGE_KEY,
-    JSON.stringify(current.map((listing) => (listing.id === updated.id ? updated : listing))),
+    JSON.stringify(current.map((listing) => (listing.id === cleaned.id ? cleaned : listing))),
   );
 }
 
@@ -97,15 +167,18 @@ export async function fetchBackendListings() {
     throw new Error(result.error ?? "Could not load database listings.");
   }
 
-  const result = (await response.json()) as { listings?: OracleListing[] };
-  return result.listings ?? [];
+  const result = (await response.json()) as { listings?: unknown[] };
+  return Array.isArray(result.listings) ? result.listings.flatMap((listing) => cleanListing(listing) ?? []) : [];
 }
 
 export async function saveBackendListing(listing: OracleListing) {
+  const cleaned = cleanListing(listing);
+  if (!cleaned) throw new Error("Listing metadata is incomplete.");
+
   const response = await fetch("/api/listings", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ listing }),
+    body: JSON.stringify({ listing: cleaned }),
   });
 
   if (!response.ok) {
@@ -113,15 +186,18 @@ export async function saveBackendListing(listing: OracleListing) {
     throw new Error(result.error ?? "Could not save listing to database.");
   }
 
-  const result = (await response.json()) as { listing?: OracleListing };
-  return result.listing;
+  const result = (await response.json()) as { listing?: unknown };
+  return cleanListing(result.listing);
 }
 
 export async function updateBackendListing(listing: OracleListing) {
+  const cleaned = cleanListing(listing);
+  if (!cleaned) throw new Error("Listing metadata is incomplete.");
+
   const response = await fetch("/api/listings", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id: listing.id, buyTx: listing.buyTx }),
+    body: JSON.stringify({ id: cleaned.id, buyTx: cleaned.buyTx }),
   });
 
   if (!response.ok) {
@@ -129,6 +205,6 @@ export async function updateBackendListing(listing: OracleListing) {
     throw new Error(result.error ?? "Could not update listing in database.");
   }
 
-  const result = (await response.json()) as { listing?: OracleListing };
-  return result.listing;
+  const result = (await response.json()) as { listing?: unknown };
+  return cleanListing(result.listing);
 }

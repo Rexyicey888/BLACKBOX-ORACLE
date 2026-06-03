@@ -1,47 +1,44 @@
 # BlackBox Oracle Backend Setup
 
-## 1. Add Email Delivery
+## 1. Email Flow
 
-1. Open https://resend.com and sign in.
-2. Go to **API Keys**.
-3. Click **Create API Key**.
-4. Name it `blackbox-oracle-vercel`.
-5. Give it sending access.
-6. Copy the key that starts with `re_`.
-7. In Vercel, open your project, then **Settings > Environment Variables**.
-8. Add:
+No email provider or verified domain is required for the hackathon demo.
 
-```txt
-RESEND_API_KEY=re_your_key_here
-AUTH_FROM_EMAIL=BlackBox Oracle <launch@yourdomain.com>
-AUTH_DEMO_CODES=false
+`Launch App` asks for an email and immediately opens the dashboard. The email is only a demo-session label. Wallet connection, Story Aeneid transactions, and CDR read conditions are the actual security boundary.
+
+## 2. Contract Redeploy
+
+Redeploy `BlackBoxAccessCondition` after the June 2 security fix:
+
+```powershell
+npm.cmd run compile:contracts
+npm.cmd run deploy:condition
 ```
 
-Use a verified Resend domain for `AUTH_FROM_EMAIL` if you want to send codes to anyone.
+Copy the new address into `.env` and Vercel:
 
-## 2. Add The Database
+```txt
+VITE_BLACKBOX_CONDITION_ADDRESS=0x...
+```
 
-1. In Vercel, open your project.
+The old deployed contract does not match the updated `buyAccess(uuid, owner)` ABI.
+
+## 3. Optional Database
+
+The app can persist entered emails and created vault listings through Neon Postgres on Vercel.
+
+1. In Vercel, open the project.
 2. Go to **Storage** or **Marketplace**.
 3. Add **Neon Postgres**.
 4. Connect it to the BlackBox Oracle project.
 5. Let Vercel add `DATABASE_URL` to Production.
 6. Redeploy the app.
 
-The app creates its own tables on first use:
+The app creates `blackbox_users` and `blackbox_listings` on first use.
 
-- `blackbox_users`
-- `blackbox_listings`
+Public listing writes are disabled by default. For the demo, browser-local listings are enough unless you need listings to persist across devices.
 
-## 3. Local Pull
-
-After adding secrets in Vercel, run:
-
-```powershell
-vercel.cmd env pull .env.local --yes
-```
-
-Then redeploy:
+## 4. Deploy
 
 ```powershell
 vercel.cmd deploy --prod --yes

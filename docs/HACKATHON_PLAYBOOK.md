@@ -18,7 +18,7 @@ The prize version adds a custom read condition:
 
 - creator seals data in a vault
 - creator configures `BlackBoxAccessCondition`
-- buyer pays `buyAccess(uuid)`
+- buyer pays `buyAccess(uuid, owner)`
 - buyer calls CDR read
 - validators confirm the read condition and release decryption partials
 

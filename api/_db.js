@@ -27,7 +27,7 @@ export async function ensureSchema() {
         CREATE TABLE IF NOT EXISTS blackbox_users (
           email TEXT PRIMARY KEY,
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          last_login_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `,
       sql`
@@ -57,13 +57,13 @@ export async function ensureSchema() {
   await schemaReady;
 }
 
-export async function upsertVerifiedUser(email) {
+export async function upsertUserEmail(email) {
   await ensureSchema();
   const sql = getSql();
   await sql`
-    INSERT INTO blackbox_users (email, last_login_at)
+    INSERT INTO blackbox_users (email, last_seen_at)
     VALUES (${email}, NOW())
     ON CONFLICT (email)
-    DO UPDATE SET last_login_at = EXCLUDED.last_login_at
+    DO UPDATE SET last_seen_at = EXCLUDED.last_seen_at
   `;
 }

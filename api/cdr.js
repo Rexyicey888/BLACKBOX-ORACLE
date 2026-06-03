@@ -8,6 +8,28 @@ const ALLOWED_CDR_PATHS = [
   /^dkg\/cdr_partials$/,
 ];
 
+function getAllowedUpstreamOrigins() {
+  return (process.env.CDR_API_ALLOWED_ORIGINS ?? DEFAULT_CDR_API_UPSTREAM)
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+    .map((origin) => new URL(origin).origin);
+}
+
+function getUpstream() {
+  const upstream = new URL(process.env.CDR_API_UPSTREAM ?? DEFAULT_CDR_API_UPSTREAM);
+  if (!["http:", "https:"].includes(upstream.protocol)) {
+    throw new Error("CDR_API_UPSTREAM must use http or https.");
+  }
+
+  const allowedOrigins = getAllowedUpstreamOrigins();
+  if (!allowedOrigins.includes(upstream.origin)) {
+    throw new Error("CDR_API_UPSTREAM is not in CDR_API_ALLOWED_ORIGINS.");
+  }
+
+  return upstream;
+}
+
 function getPath(req) {
   const path = req.query?.path;
   const rawPath = Array.isArray(path) ? path.join("/") : typeof path === "string" ? path : "";
@@ -46,7 +68,6 @@ export default async function handler(req, res) {
     return;
   }
 
-  const upstream = (process.env.CDR_API_UPSTREAM ?? DEFAULT_CDR_API_UPSTREAM).replace(/\/+$/, "");
   const requestPath = getPath(req);
   if (!isAllowedPath(requestPath)) {
     res.status(404).json({ error: "CDR API path not allowed" });
@@ -55,11 +76,12 @@ export default async function handler(req, res) {
 
   const query = new URL(req.url ?? "/api/cdr", "https://blackbox.local").searchParams;
   query.delete("path");
-  const queryString = query.toString();
-  const url = `${upstream}/${requestPath}${queryString ? `?${queryString}` : ""}`;
 
   try {
-    const response = await fetch(url, {
+    const upstream = getUpstream();
+    upstream.pathname = `${upstream.pathname.replace(/\/+$/, "")}/${requestPath}`;
+    upstream.search = query.toString();
+    const response = await fetch(upstream, {
       method: req.method,
       headers: copyRequestHeaders(req.headers),
     });

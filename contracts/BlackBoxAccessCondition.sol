@@ -26,7 +26,7 @@ contract BlackBoxAccessCondition is ICDRWriteCondition, ICDRReadCondition {
         bool active;
     }
 
-    mapping(uint32 => Listing) public listings;
+    mapping(uint32 => mapping(address => Listing)) public listings;
     mapping(uint32 => mapping(address => mapping(address => bool))) public canRead;
 
     bool private _locked;
@@ -47,10 +47,7 @@ contract BlackBoxAccessCondition is ICDRWriteCondition, ICDRReadCondition {
         require(owner != address(0), "INVALID_OWNER");
         require(msg.sender == owner, "NOT_OWNER");
 
-        Listing storage listing = listings[uuid];
-        require(listing.owner == address(0) || listing.owner == owner, "OWNER_LOCKED");
-
-        listings[uuid] = Listing({
+        listings[uuid][owner] = Listing({
             owner: owner,
             price: price,
             active: true
@@ -62,7 +59,7 @@ contract BlackBoxAccessCondition is ICDRWriteCondition, ICDRReadCondition {
     }
 
     function deactivateListing(uint32 uuid) external {
-        Listing storage listing = listings[uuid];
+        Listing storage listing = listings[uuid][msg.sender];
         require(listing.owner == msg.sender, "NOT_OWNER");
 
         listing.active = false;
@@ -71,7 +68,7 @@ contract BlackBoxAccessCondition is ICDRWriteCondition, ICDRReadCondition {
     }
 
     function reactivateListing(uint32 uuid) external {
-        Listing storage listing = listings[uuid];
+        Listing storage listing = listings[uuid][msg.sender];
         require(listing.owner == msg.sender, "NOT_OWNER");
 
         listing.active = true;
@@ -80,7 +77,7 @@ contract BlackBoxAccessCondition is ICDRWriteCondition, ICDRReadCondition {
     }
 
     function revokeAccess(uint32 uuid, address buyer) external {
-        Listing memory listing = listings[uuid];
+        Listing memory listing = listings[uuid][msg.sender];
         require(listing.owner == msg.sender, "NOT_OWNER");
         require(buyer != msg.sender, "CANNOT_REVOKE_OWNER");
 
@@ -89,8 +86,8 @@ contract BlackBoxAccessCondition is ICDRWriteCondition, ICDRReadCondition {
         emit AccessRevoked(uuid, listing.owner, buyer);
     }
 
-    function buyAccess(uint32 uuid) external payable nonReentrant {
-        Listing memory listing = listings[uuid];
+    function buyAccess(uint32 uuid, address owner) external payable nonReentrant {
+        Listing memory listing = listings[uuid][owner];
         require(listing.owner != address(0), "UNCONFIGURED_LISTING");
         require(listing.active, "INACTIVE_LISTING");
         require(msg.value >= listing.price, "INSUFFICIENT_PAYMENT");
@@ -126,7 +123,7 @@ contract BlackBoxAccessCondition is ICDRWriteCondition, ICDRReadCondition {
         address caller
     ) external view returns (bool) {
         address owner = abi.decode(conditionData, (address));
-        Listing memory listing = listings[uuid];
+        Listing memory listing = listings[uuid][owner];
 
         return listing.owner == owner && (caller == owner || canRead[uuid][owner][caller]);
     }

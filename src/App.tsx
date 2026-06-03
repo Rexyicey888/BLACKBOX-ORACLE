@@ -7,7 +7,6 @@ import {
   Copy,
   ExternalLink,
   Eye,
-  KeyRound,
   LayoutDashboard,
   ListFilter,
   Loader2,
@@ -16,7 +15,6 @@ import {
   MessageSquareQuote,
   RefreshCw,
   RotateCcw,
-  ShieldCheck,
   Sparkles,
   Wand2,
   Wallet,
@@ -27,10 +25,8 @@ import { parseEther, type Address } from "viem";
 import { getBlackBoxConditionAddress } from "./lib/blackboxAccess";
 import {
   buyPaidAccess,
-  configurePaidListing,
   connectWallet,
   ensureCdrWasm,
-  getCdrFees,
   openOwnerOnlySecret,
   openPaidSecret,
   sealOwnerOnlySecret,
@@ -52,7 +48,7 @@ type AppView = "market" | "email" | "dashboard";
 
 const emptyForm = {
   title: "",
-  category: "Private Data",
+  category: "Private Insight",
   priceLabel: "0.10 IP",
   publicTease: "",
   weirdness: "",
@@ -60,19 +56,28 @@ const emptyForm = {
 };
 
 const demoForm = {
-  title: "The Anti-Resume Oracle",
-  category: "Private Data",
+  title: "Backchannel Deal Signal",
+  category: "Private Research",
   priceLabel: "0.08 IP",
   publicTease:
-    "A private founder-evaluation rubric. Buyers pay for one verdict, but never see the underlying notes.",
-  weirdness: "A hiring signal that sells the answer without leaking the private evaluation dataset.",
+    "A sealed diligence note for one startup deal. Buyers unlock the verdict, not the source notes.",
+  weirdness: "Turns private research into a paid answer while the evidence stays sealed.",
   secret:
-    'This founder is a "shipper under pressure": inconsistent polish, unusually high recovery speed, and a strong bias toward prototypes over planning.',
+    "Verdict: promising but fragile. The team ships quickly, but the customer pipeline depends on two warm intros that have not converted yet.",
 };
 
 function priceLabelToWei(priceLabel: string) {
-  const match = priceLabel.match(/(\d+(?:\.\d+)?)/);
-  return parseEther(match?.[1] ?? "0");
+  const match = priceLabel.trim().match(/^(\d+(?:\.\d{1,18})?)\s*IP$/i);
+  if (!match) {
+    throw new Error("Use a numeric paid price like 0.08 IP.");
+  }
+
+  const priceWei = parseEther(match[1]);
+  if (priceWei <= 0n) {
+    throw new Error("Paid drops need a price above 0 IP.");
+  }
+
+  return priceWei;
 }
 
 function shortHash(value?: string) {
@@ -92,12 +97,8 @@ function App() {
   const [introOpen, setIntroOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [email, setEmail] = useState("");
-  const [emailCode, setEmailCode] = useState("");
-  const [emailChallenge, setEmailChallenge] = useState("");
   const [connectedEmail, setConnectedEmail] = useState("");
   const [account, setAccount] = useState<Address>();
-  const [wasmReady, setWasmReady] = useState(false);
-  const [fees, setFees] = useState<{ allocate: bigint; write: bigint; read: bigint }>();
   const [listings, setListings] = useState<OracleListing[]>(() => loadListings());
   const [selectedId, setSelectedId] = useState("seed-1");
   const [status, setStatus] = useState<OperationStatus>("idle");
@@ -105,7 +106,6 @@ function App() {
   const [revealedSecret, setRevealedSecret] = useState("");
   const [readTx, setReadTx] = useState("");
   const [recoveryUuid, setRecoveryUuid] = useState("");
-  const [question, setQuestion] = useState("What is the one answer I am allowed to know?");
   const [form, setForm] = useState(emptyForm);
 
   const selected = useMemo(
@@ -118,14 +118,8 @@ function App() {
   useEffect(() => {
     let mounted = true;
     ensureCdrWasm()
-      .then(() => mounted && setWasmReady(true))
+      .then(() => undefined)
       .catch((error) => mounted && setMessage(error instanceof Error ? error.message : "CDR WASM failed to load."));
-
-    getCdrFees()
-      .then((nextFees) => mounted && setFees(nextFees))
-      .catch(() => {
-        if (mounted) setFees(undefined);
-      });
 
     void refreshListings({ silent: true });
 
@@ -186,7 +180,7 @@ function App() {
     setSidebarOpen(false);
   }
 
-  async function onEmailConnect(event: FormEvent<HTMLFormElement>) {
+  function onEmailConnect(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmed = email.trim();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
@@ -195,68 +189,23 @@ function App() {
       return;
     }
 
-    setStatus("loading");
-    setMessage("Sending your BlackBox launch code...");
-    try {
-      const response = await fetch("/api/auth/challenge", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: trimmed }),
-      });
-      const result = (await response.json()) as {
-        challenge?: string;
-        error?: string;
-        message?: string;
-      };
-      if (!response.ok || !result.challenge) {
-        throw new Error(result.error ?? "Could not send launch code.");
-      }
+    const normalizedEmail = trimmed.toLowerCase();
+    void fetch("/api/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: normalizedEmail }),
+    }).catch(() => undefined);
 
-      setEmailChallenge(result.challenge);
-      setEmailCode("");
-      setStatus("success");
-      setMessage(result.message ?? `Launch code sent to ${trimmed}.`);
-    } catch (error) {
-      setStatus("error");
-      setMessage(error instanceof Error ? error.message : "Could not send launch code.");
-    }
-  }
-
-  async function onVerifyEmailCode(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!emailChallenge) {
-      setStatus("error");
-      setMessage("Request a launch code first.");
-      return;
-    }
-
-    setStatus("loading");
-    setMessage("Verifying launch code...");
-    try {
-      const response = await fetch("/api/auth/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ challenge: emailChallenge, code: emailCode }),
-      });
-      const result = (await response.json()) as { email?: string; error?: string };
-      if (!response.ok || !result.email) {
-        throw new Error(result.error ?? "Could not verify launch code.");
-      }
-
-      setConnectedEmail(result.email);
-      setView("dashboard");
-      setStatus("success");
-      setMessage(`Email verified: ${result.email}. Connect your wallet to seal and recover CDR vaults.`);
-      window.setTimeout(() => document.getElementById("dashboard")?.scrollIntoView({ behavior: "smooth" }), 0);
-    } catch (error) {
-      setStatus("error");
-      setMessage(error instanceof Error ? error.message : "Could not verify launch code.");
-    }
+    setConnectedEmail(normalizedEmail);
+    setView("dashboard");
+    setStatus("success");
+    setMessage(`Dashboard opened for ${normalizedEmail}. Connect your wallet to seal and recover insight drops.`);
+    window.setTimeout(() => document.getElementById("dashboard")?.scrollIntoView({ behavior: "smooth" }), 0);
   }
 
   function useDemoTemplate() {
     setForm(demoForm);
-    setMessage("Demo oracle loaded. Review the private answer, then create the CDR vault.");
+    setMessage("Example drop loaded. Review the sealed answer, then create the CDR vault.");
     setStatus("success");
   }
 
@@ -268,7 +217,7 @@ function App() {
     }
 
     if (!form.title.trim() || !form.publicTease.trim() || !form.secret.trim()) {
-      setMessage("Give the oracle a title, public tease, and private secret.");
+      setMessage("Give the drop a title, public tease, and sealed answer.");
       setStatus("error");
       return;
     }
@@ -276,30 +225,23 @@ function App() {
     setStatus("loading");
     setMessage(
       conditionContract
-        ? "Creating a paid-access CDR vault, encrypting locally, then waiting for the price gate to confirm..."
+        ? "Creating a paid-access CDR vault, confirming the price gate, then encrypting locally..."
         : "Allocating a CDR vault, encrypting locally, then writing on-chain...",
     );
     try {
-      const priceWei = priceLabelToWei(form.priceLabel);
+      const priceWei = conditionContract ? priceLabelToWei(form.priceLabel) : undefined;
       const result = conditionContract
         ? await sealPaidSecret({
             account,
             secret: form.secret,
+            priceWei: priceWei!,
             conditionContract,
           })
         : await sealOwnerOnlySecret({
             account,
             secret: form.secret,
           });
-      const configureResult =
-        conditionContract && result.uuid
-          ? await configurePaidListing({
-              account,
-              uuid: result.uuid,
-              priceWei,
-              conditionContract,
-            })
-          : undefined;
+      const configureTx = "configureTx" in result ? (result.configureTx as OracleListing["configureTx"]) : undefined;
       const listing: OracleListing = {
         id: crypto.randomUUID(),
         title: form.title,
@@ -311,9 +253,9 @@ function App() {
         vaultUuid: result.uuid,
         allocateTx: result.allocateTx,
         writeTx: result.writeTx,
-        configureTx: configureResult?.txHash,
+        configureTx,
         conditionContract,
-        priceWei: priceWei.toString(),
+        priceWei: priceWei?.toString(),
         accessMode: conditionContract ? "paid" : "owner-only",
         createdAt: new Date().toISOString(),
       };
@@ -330,12 +272,12 @@ function App() {
       setStatus("success");
       setMessage(
         conditionContract
-          ? `Paid oracle sealed in CDR vault #${result.uuid}. Request decryption is ready.`
-          : `Oracle sealed in CDR vault #${result.uuid}. Request decryption is ready.`,
+          ? `Paid insight drop sealed in CDR vault #${result.uuid}. Request decryption is ready.`
+          : `Insight drop sealed in CDR vault #${result.uuid}. Request decryption is ready.`,
       );
     } catch (error) {
       setStatus("error");
-      setMessage(error instanceof Error ? error.message : "Could not seal oracle.");
+      setMessage(error instanceof Error ? error.message : "Could not seal this drop.");
     }
   }
 
@@ -407,9 +349,9 @@ function App() {
   }
 
   async function onBuyAccess() {
-    if (!selected?.vaultUuid || !selected.conditionContract || !selected.priceWei) {
+    if (!selected?.vaultUuid || !selected.conditionContract || !selected.owner) {
       setStatus("error");
-      setMessage("This oracle does not have a paid access contract configured.");
+      setMessage("This drop does not have a paid access contract configured.");
       return;
     }
 
@@ -425,10 +367,10 @@ function App() {
       const result = await buyPaidAccess({
         account,
         uuid: selected.vaultUuid,
-        priceWei: BigInt(selected.priceWei),
+        owner: selected.owner,
         conditionContract: selected.conditionContract,
       });
-      const updatedListing: OracleListing = { ...selected, buyTx: result.txHash };
+      const updatedListing: OracleListing = { ...selected, buyTx: result.txHash, priceWei: result.priceWei.toString() };
       updateUserListing(updatedListing);
       setListings((current) => current.map((listing) => (listing.id === selected.id ? updatedListing : listing)));
       void updateBackendListing(updatedListing)
@@ -448,7 +390,7 @@ function App() {
     if (!selected) return;
     const payload = JSON.stringify(selected, null, 2);
     void navigator.clipboard.writeText(payload);
-    setMessage("Oracle metadata copied.");
+    setMessage("Drop metadata copied.");
   }
 
   return (
@@ -476,14 +418,14 @@ function App() {
             active={view === "market"}
             icon={<ListFilter size={18} />}
             label="Market"
-            note="Browse sealed answers"
+            note="Browse sealed drops"
             onClick={openMarket}
           />
           <SidebarButton
             active={view === "email" || view === "dashboard"}
             icon={<LayoutDashboard size={18} />}
             label={connectedEmail ? "Dashboard" : "Launch App"}
-            note={connectedEmail ? "Seal and recover vaults" : "Connect email first"}
+            note={connectedEmail ? "Create and recover drops" : "Connect email first"}
             onClick={openDashboard}
           />
           <SidebarButton
@@ -499,7 +441,7 @@ function App() {
           <p className="eyebrow">session</p>
           <InfoTile label="Email" value={connectedEmail || "not connected"} />
           <InfoTile label="Wallet" value={account ? shortHash(account) : "not connected"} />
-          <InfoTile label="Payment gate" value={conditionContract ? shortHash(conditionContract) : "owner proof"} />
+          <InfoTile label="Network" value="Story Aeneid" />
         </div>
 
         <button className="sidebar-wallet" onClick={onConnect}>
@@ -535,54 +477,39 @@ function App() {
           </div>
         </header>
 
-        <section className="signal-strip" aria-label="Project status">
-          <StatusPill icon={<ShieldCheck size={18} />} label={wasmReady ? "CDR WASM ready" : "Loading CDR"} />
-          <StatusPill icon={<KeyRound size={18} />} label="Story Aeneid" />
-          <StatusPill icon={<CircleDollarSign size={18} />} label={fees ? "Fees detected" : "Fee check pending"} />
-          <StatusPill icon={<Lock size={18} />} label={conditionContract ? `Gate ${shortHash(conditionContract)}` : "Owner-only fallback"} />
-        </section>
-
         {view === "market" ? (
           <>
             <section className="hero-panel">
               <div className="hero-copy">
-                <p className="eyebrow">sealed answers / paid unlocks / private data rails</p>
-                <h1>Sell the answer. Keep the dataset sealed.</h1>
+                <p className="eyebrow">for private researchers, tipsters, and creators</p>
+                <h1>Sell one secret answer without exposing the source.</h1>
                 <p>
-                  BlackBox Oracle turns private knowledge into a programmable market object. A creator seals the answer
-                  in CDR, a buyer pays the access gate, and only an approved wallet can request decryption.
+                  BlackBox Oracle is a marketplace for sealed insight drops. A creator locks a sensitive answer in CDR,
+                  a buyer unlocks only that answer, and the notes, files, or backstory never leave the vault.
                 </p>
                 <div className="hero-actions">
+                  <button className="secondary-action fit-action" onClick={() => setView("email")}>
+                    <LayoutDashboard size={18} />
+                    Create A Drop
+                  </button>
                   <button className="primary-action fit-action" onClick={() => setIntroOpen(true)}>
                     <Sparkles size={18} />
                     Try Live Vault
-                  </button>
-                  <button className="secondary-action fit-action" onClick={() => setView("email")}>
-                    <LayoutDashboard size={18} />
-                    Launch App
                   </button>
                 </div>
               </div>
               <div className="hero-orbit" aria-hidden="true">
                 <AnimatedBlackBox compact />
-                <div className="orbit-chip chip-a">encrypted</div>
-                <div className="orbit-chip chip-b">paid gate</div>
-                <div className="orbit-chip chip-c">recoverable</div>
+                <div className="orbit-chip chip-a">tip sealed</div>
+                <div className="orbit-chip chip-b">buyer unlocks</div>
+                <div className="orbit-chip chip-c">source hidden</div>
               </div>
             </section>
 
-            <section className="proof-strip" aria-label="Live demo proof">
-              <ProofItem label="Contract" value="verified" />
-              <ProofItem label="CDR API" value="HTTPS proxy live" />
-              <ProofItem label="Network" value="Story Aeneid" />
-              <ProofItem label="Flow" value="seal / buy / reveal" />
-            </section>
-
-            <section className="how-strip" aria-label="How BlackBox Oracle works">
-              <HowStep index="01" title="Creator seals" text="Private answer is encrypted locally and written to a CDR vault." />
-              <HowStep index="02" title="Buyer pays" text="The access contract records who paid for the vault UUID." />
-              <HowStep index="03" title="CDR checks" text="Validators check the read condition before releasing partials." />
-              <HowStep index="04" title="Secret reveals" text="Only the allowed wallet can recover the sealed answer." />
+            <section className="target-strip" aria-label="Who BlackBox Oracle is for">
+              <AudienceCard title="Creators" text="Package private notes as one paid answer instead of handing over the whole file." />
+              <AudienceCard title="Buyers" text="Pay for the useful verdict, signal, or tip without receiving extra sensitive context." />
+              <AudienceCard title="Sources" text="Keep raw evidence, names, screenshots, and research material encrypted in CDR." />
             </section>
 
             <div className="main-grid market-grid">
@@ -601,8 +528,6 @@ function App() {
                 selected={selected}
                 revealedSecret={revealedSecret}
                 readTx={readTx}
-                question={question}
-                setQuestion={setQuestion}
                 copySelected={copySelected}
                 onBuyAccess={onBuyAccess}
                 onReveal={onReveal}
@@ -615,10 +540,10 @@ function App() {
               <AnimatedBlackBox compact />
               <div className="email-copy">
                 <p className="eyebrow">launch app</p>
-                <h1>Connect your email to enter the BlackBox dashboard.</h1>
+                <h1>Open your private insight dashboard.</h1>
                 <p>
-                  Email gives the demo a user identity layer. Wallet approvals still happen through Story Aeneid, and
-                  private answers still reveal only through CDR.
+                  Email labels your demo session. Wallet approvals still happen through Story Aeneid, and sealed answers
+                  still reveal only through CDR.
                 </p>
               </div>
               <form className="email-form" onSubmit={onEmailConnect}>
@@ -633,28 +558,9 @@ function App() {
                 </label>
                 <button className="primary-action" type="submit">
                   <AtSign size={18} />
-                  Send Code
+                  Enter Dashboard
                 </button>
               </form>
-              {emailChallenge ? (
-                <form className="code-form" onSubmit={onVerifyEmailCode}>
-                  <label>
-                    Launch code
-                    <input
-                      inputMode="numeric"
-                      maxLength={6}
-                      value={emailCode}
-                      onChange={(event) => setEmailCode(event.target.value.replace(/\D/g, ""))}
-                      placeholder="6-digit code"
-                    />
-                  </label>
-                  <button className="primary-action" type="submit">
-                    <KeyRound size={18} />
-                    Verify Code
-                  </button>
-                  <p className="demo-code-note">Check your email inbox for the 6-digit launch code.</p>
-                </form>
-              ) : null}
             </div>
           </section>
         ) : (
@@ -666,39 +572,26 @@ function App() {
               </button>
               <div>
                 <p className="eyebrow">creator dashboard</p>
-                <h1>Seal A BlackBox</h1>
+                <h1>Create A Sealed Insight</h1>
               </div>
               <button className="secondary-action fit-action" onClick={useDemoTemplate}>
                 <Wand2 size={18} />
-                Demo Template
+                Use Example
               </button>
             </div>
 
             <div className="dashboard-grid">
-              <AccountPanel
-                account={account}
-                connectedEmail={connectedEmail}
-                selected={selected}
-                conditionContract={conditionContract}
-                onConnect={onConnect}
-              />
-
-              <section className="vault-stage" aria-label="Animated BlackBox vault">
-                <AnimatedBlackBox />
-                <div className="vault-stage-copy">
-                  <p className="eyebrow">private data chamber</p>
-                  <h2>Open the box, seal the answer, let the contract decide who reads it.</h2>
-                </div>
-              </section>
-
               <section className="panel dashboard-panel">
                 <div className="panel-heading">
                   <div>
-                    <p className="eyebrow">new vault</p>
-                    <h3>Private Data Listing</h3>
+                    <p className="eyebrow">new drop</p>
+                    <h3>Private Insight Listing</h3>
                   </div>
                   <Lock size={22} />
                 </div>
+                <p className="tease">
+                  Write the public tease buyers can inspect, then seal the private answer into a CDR vault.
+                </p>
                 <VaultForm form={form} setForm={setForm} />
                 <button className="primary-action" onClick={onSeal}>
                   {status === "loading" ? <Loader2 className="spin" size={18} /> : <Lock size={18} />}
@@ -706,98 +599,90 @@ function App() {
                 </button>
               </section>
 
-              <section className="panel recovery-panel">
-                <div className="panel-heading">
-                  <div>
-                    <p className="eyebrow">CDR reveal</p>
-                    <h3>Vault Recovery</h3>
+              <div className="dashboard-side">
+                <AccountPanel
+                  account={account}
+                  connectedEmail={connectedEmail}
+                  selected={selected}
+                  onConnect={onConnect}
+                />
+
+                <section className="panel recovery-panel">
+                  <div className="panel-heading">
+                    <div>
+                      <p className="eyebrow">CDR reveal</p>
+                      <h3>Recover A Sealed Answer</h3>
+                    </div>
+                    <RotateCcw size={22} />
                   </div>
-                  <RotateCcw size={22} />
-                </div>
-                <p className="tease">
-                  This is where the sealed vault opens. Enter a UUID or use the selected vault, then request CDR
-                  decryption with an approved wallet.
-                </p>
-                <label>
-                  Vault UUID
-                  <input
-                    value={recoveryUuid}
-                    onChange={(event) => setRecoveryUuid(event.target.value)}
-                    placeholder={selected?.vaultUuid ? String(selected.vaultUuid) : "Example: 12345"}
-                  />
-                </label>
-                <button className="secondary-action" onClick={onRecoverVault}>
-                  <Eye size={18} />
-                  Request Decryption
-                </button>
-                {selected?.vaultUuid ? (
-                  <button className="primary-action" onClick={onReveal}>
+                  <p className="tease">
+                    Enter a vault UUID or use the selected drop, then request decryption with an approved wallet.
+                  </p>
+                  <label>
+                    Vault UUID
+                    <input
+                      value={recoveryUuid}
+                      onChange={(event) => setRecoveryUuid(event.target.value)}
+                      placeholder={selected?.vaultUuid ? String(selected.vaultUuid) : "Example: 12345"}
+                    />
+                  </label>
+                  <button className="secondary-action" onClick={onRecoverVault}>
                     <Eye size={18} />
-                    Decrypt Selected Vault #{selected.vaultUuid}
+                    Request Decryption
                   </button>
-                ) : null}
-                {revealedSecret ? (
-                  <div className="reveal">
-                    <p className="eyebrow">recovered answer</p>
-                    <strong>{revealedSecret}</strong>
-                    {readTx ? <small>Read tx: {readTx}</small> : null}
-                  </div>
-                ) : null}
-              </section>
+                  {selected?.vaultUuid ? (
+                    <button className="primary-action" onClick={onReveal}>
+                      <Eye size={18} />
+                      Decrypt Selected Vault #{selected.vaultUuid}
+                    </button>
+                  ) : null}
+                  {revealedSecret ? (
+                    <div className="reveal">
+                      <p className="eyebrow">recovered answer</p>
+                      <strong>{revealedSecret}</strong>
+                      {readTx ? <small>Read tx: {readTx}</small> : null}
+                    </div>
+                  ) : null}
+                </section>
 
-              <section className="panel live-vaults-panel">
-                <div className="panel-heading">
-                  <div>
-                    <p className="eyebrow">live vaults</p>
-                    <h3>Recent BlackBoxes</h3>
+                <section className="panel live-vaults-panel">
+                  <div className="panel-heading">
+                    <div>
+                      <p className="eyebrow">live vaults</p>
+                      <h3>Recent Drops</h3>
+                    </div>
+                    <Sparkles size={22} />
                   </div>
-                  <Sparkles size={22} />
-                </div>
-                <div className="live-vault-list">
-                  {liveListings.length ? (
-                    liveListings.map((listing) => (
-                      <button
-                        className={`live-vault-row ${selectedId === listing.id ? "active" : ""}`}
-                        key={listing.id}
-                        onClick={() => {
-                          setSelectedId(listing.id);
-                          setRecoveryUuid(String(listing.vaultUuid ?? ""));
-                          setRevealedSecret("");
-                          setReadTx("");
-                        }}
-                      >
-                        <strong>{listing.title}</strong>
-                        <span>Vault #{listing.vaultUuid}</span>
-                      </button>
-                    ))
-                  ) : (
-                    <p className="empty-copy">Create your first CDR vault and it will appear here with proof links.</p>
-                  )}
-                </div>
-              </section>
-
-              <section className="panel demo-script-panel">
-                <div className="panel-heading">
-                  <div>
-                    <p className="eyebrow">recording guide</p>
-                    <h3>Demo Script</h3>
+                  <div className="live-vault-list">
+                    {liveListings.length ? (
+                      liveListings.map((listing) => (
+                        <button
+                          className={`live-vault-row ${selectedId === listing.id ? "active" : ""}`}
+                          key={listing.id}
+                          onClick={() => {
+                            setSelectedId(listing.id);
+                            setRecoveryUuid(String(listing.vaultUuid ?? ""));
+                            setRevealedSecret("");
+                            setReadTx("");
+                          }}
+                        >
+                          <strong>{listing.title}</strong>
+                          <span>Vault #{listing.vaultUuid}</span>
+                        </button>
+                      ))
+                    ) : (
+                      <p className="empty-copy">Create your first sealed insight and it will appear here.</p>
+                    )}
                   </div>
-                  <Sparkles size={22} />
-                </div>
-                <ol className="demo-script-list">
-                  <li>Connect creator wallet and load the demo template.</li>
-                  <li>Create a CDR vault and show the payment-gate details.</li>
-                  <li>Switch to buyer wallet, buy access, then request decryption.</li>
-                  <li>End on the recovered answer and StoryScan proof links.</li>
-                </ol>
-              </section>
+                </section>
+              </div>
             </div>
           </section>
         )}
 
         <section className={`status-console ${status}`}>
           {status === "success" ? <CheckCircle2 size={18} /> : <MessageSquareQuote size={18} />}
-          <span>{message || "Ready. Connect a funded Aeneid wallet when you want to create a live vault."}</span>
+          <span>{message || "Ready. Connect a funded Aeneid wallet when you want to seal a private insight."}</span>
         </section>
 
         <nav className="mobile-dock" aria-label="Mobile sections">
@@ -822,10 +707,10 @@ function App() {
             <AnimatedBlackBox compact />
             <div>
               <p className="eyebrow">live vault mode</p>
-              <h2 id="intro-title">Create a real CDR vault, then recover it from the dashboard.</h2>
+              <h2 id="intro-title">Seal one private answer, then prove it can be recovered.</h2>
               <p>
-                First connect an email to launch the app. Then the dashboard opens the BlackBox chamber with wallet
-                details, payment gate information, CDR vault creation, and reveal/recovery.
+                First enter an email to launch the dashboard. Then connect a wallet, create a CDR vault, and request
+                decryption with the approved wallet.
               </p>
             </div>
             <div className="intro-actions">
@@ -848,33 +733,28 @@ function AccountPanel(props: {
   account?: Address;
   connectedEmail: string;
   selected?: OracleListing;
-  conditionContract?: Address;
   onConnect: () => void;
 }) {
   const selected = props.selected;
-  const readCondition = selected?.conditionContract ?? props.conditionContract;
-  const writeCondition = selected?.conditionContract ?? props.conditionContract;
 
   return (
     <section className="panel account-panel">
       <div className="panel-heading">
         <div>
-          <p className="eyebrow">wallet and payment gate</p>
-          <h3>Account Control</h3>
+          <p className="eyebrow">session</p>
+          <h3>Creator Wallet</h3>
         </div>
         <Wallet size={22} />
       </div>
       <div className="account-grid">
         <InfoTile label="Email" value={props.connectedEmail || "not connected"} />
         <InfoTile label="Wallet" value={props.account ? shortHash(props.account) : "not connected"} />
-        <InfoTile label="Unlock price" value={selected?.priceLabel ?? "select an oracle"} />
-        <InfoTile label="Payment gate" value={selected?.accessMode === "paid" ? "paid contract" : "owner proof"} />
-        <InfoTile label="Read condition" value={readCondition ? shortHash(readCondition) : "not configured"} />
-        <InfoTile label="Write condition" value={writeCondition ? shortHash(writeCondition) : "not configured"} />
+        <InfoTile label="Selected drop" value={selected?.title ?? "none selected"} />
+        <InfoTile label="Unlock price" value={selected?.priceLabel ?? "select a drop"} />
       </div>
       <div className="account-tease">
-        <p className="eyebrow">public tease</p>
-        <strong>{selected?.publicTease ?? "Select or create a live BlackBox to see its public tease."}</strong>
+        <p className="eyebrow">selected tease</p>
+        <strong>{selected?.publicTease ?? "Select or create a sealed drop to see its public tease."}</strong>
       </div>
       <button className="secondary-action" onClick={props.onConnect}>
         <Wallet size={18} />
@@ -896,12 +776,13 @@ function MarketPanel(props: {
       <div className="panel-heading">
         <div>
           <p className="eyebrow">market</p>
-          <h3>Sealed Oracles</h3>
+          <h3>Sealed Insight Drops</h3>
         </div>
         <button className="icon-button" onClick={props.refresh} title="Refresh listings">
           <RefreshCw size={18} />
         </button>
       </div>
+      <p className="panel-note">Choose a public tease, then unlock only the answer the creator agreed to reveal.</p>
 
       <div className="oracle-list">
         {props.listings.map((listing) => (
@@ -931,8 +812,6 @@ function OraclePanel(props: {
   selected?: OracleListing;
   revealedSecret: string;
   readTx: string;
-  question: string;
-  setQuestion: (question: string) => void;
   copySelected: () => void;
   onBuyAccess: () => void;
   onReveal: () => void;
@@ -947,11 +826,21 @@ function OraclePanel(props: {
           <p className="eyebrow">{selected.category}</p>
           <h3>{selected.title}</h3>
         </div>
-        <button className="icon-button" onClick={props.copySelected} title="Copy oracle metadata">
+        <button className="icon-button" onClick={props.copySelected} title="Copy drop metadata">
           <Copy size={18} />
         </button>
       </div>
       <p className="tease">{selected.publicTease}</p>
+      <div className="promise-grid">
+        <div className="promise-card">
+          <small>Buyer gets</small>
+          <strong>One approved answer from the sealed vault.</strong>
+        </div>
+        <div className="promise-card">
+          <small>Source keeps</small>
+          <strong>Raw notes, files, and context hidden in CDR.</strong>
+        </div>
+      </div>
       <div className="detail-grid">
         <InfoTile label="Unlock" value={selected.priceLabel} />
         <InfoTile label="Vault" value={selected.vaultUuid ? `#${selected.vaultUuid}` : "not sealed yet"} />
@@ -960,24 +849,10 @@ function OraclePanel(props: {
       {selected.vaultUuid || selected.conditionContract || selected.owner ? (
         <ProofLinks selected={selected} />
       ) : null}
-      <div className="flow-rail" aria-label="Oracle unlock flow">
-        <FlowStep label="Public tease" active />
-        <FlowStep label="Payment gate" active={Boolean(selected.vaultUuid)} />
-        <FlowStep label="CDR reveal" active={Boolean(props.revealedSecret)} />
-      </div>
       <div className="weird-box">
         <Sparkles size={18} />
         <span>{selected.weirdness}</span>
       </div>
-      <label className="field-label" htmlFor="question">
-        Ask the box
-      </label>
-      <textarea
-        id="question"
-        value={props.question}
-        onChange={(event) => props.setQuestion(event.target.value)}
-        rows={3}
-      />
       {selected.accessMode === "paid" && props.account !== selected.owner ? (
         <button className="secondary-action" onClick={props.onBuyAccess}>
           <CircleDollarSign size={18} />
@@ -986,11 +861,11 @@ function OraclePanel(props: {
       ) : null}
       <button className="primary-action" onClick={props.onReveal}>
         <Eye size={18} />
-        {selected.vaultUuid ? "Request Decryption" : "Try Live Vault"}
+        {selected.vaultUuid ? "Unlock Sealed Answer" : "Try Live Vault"}
       </button>
       {props.revealedSecret ? (
         <div className="reveal">
-          <p className="eyebrow">oracle answer</p>
+          <p className="eyebrow">sealed answer</p>
           <strong>{props.revealedSecret}</strong>
           {selected.buyTx ? <small>Buy tx: {selected.buyTx}</small> : null}
           {props.readTx ? <small>Read tx: {props.readTx}</small> : null}
@@ -1008,23 +883,23 @@ function VaultForm(props: {
   return (
     <div className="form-grid">
       <label>
-        Title of private data
+        Drop title
         <input
           value={form.title}
           onChange={(event) => setForm({ ...form, title: event.target.value })}
-          placeholder="The Anti-Resume Oracle"
+          placeholder="Backchannel Deal Signal"
         />
       </label>
       <label>
-        Private data type
+        Insight type
         <input
           value={form.category}
           onChange={(event) => setForm({ ...form, category: event.target.value })}
-          placeholder="Private Data"
+          placeholder="Private Research"
         />
       </label>
       <label>
-        Data unlock price
+        Unlock price
         <input
           value={form.priceLabel}
           onChange={(event) => setForm({ ...form, priceLabel: event.target.value })}
@@ -1036,25 +911,25 @@ function VaultForm(props: {
         <textarea
           value={form.publicTease}
           onChange={(event) => setForm({ ...form, publicTease: event.target.value })}
-          placeholder="What buyers can know before unlock."
+          placeholder="What buyers can know before they unlock."
           rows={3}
         />
       </label>
       <label>
-        Private answer
+        Sealed answer
         <textarea
           value={form.secret}
           onChange={(event) => setForm({ ...form, secret: event.target.value })}
-          placeholder="This text is encrypted into a CDR vault."
+          placeholder="This answer is encrypted into a CDR vault."
           rows={5}
         />
       </label>
       <label>
-        Demo hook
+        Why it matters
         <textarea
           value={form.weirdness}
           onChange={(event) => setForm({ ...form, weirdness: event.target.value })}
-          placeholder="Why judges remember this oracle."
+          placeholder="Why this drop is worth unlocking."
           rows={2}
         />
       </label>
@@ -1096,15 +971,6 @@ function ProofLinks(props: { selected: OracleListing }) {
   );
 }
 
-function StatusPill(props: { icon: React.ReactNode; label: string }) {
-  return (
-    <div className="status-pill">
-      {props.icon}
-      <span>{props.label}</span>
-    </div>
-  );
-}
-
 function InfoTile(props: { label: string; value: string }) {
   return (
     <div className="info-tile">
@@ -1126,30 +992,11 @@ function ExternalLinkItem(props: { label: string; value: string; href?: string }
   );
 }
 
-function ProofItem(props: { label: string; value: string }) {
+function AudienceCard(props: { title: string; text: string }) {
   return (
-    <div className="proof-item">
-      <small>{props.label}</small>
-      <strong>{props.value}</strong>
-    </div>
-  );
-}
-
-function HowStep(props: { index: string; title: string; text: string }) {
-  return (
-    <div className="how-step">
-      <span>{props.index}</span>
+    <div className="audience-card">
       <strong>{props.title}</strong>
       <p>{props.text}</p>
-    </div>
-  );
-}
-
-function FlowStep(props: { label: string; active: boolean }) {
-  return (
-    <div className={`flow-step ${props.active ? "active" : ""}`}>
-      <span />
-      <small>{props.label}</small>
     </div>
   );
 }

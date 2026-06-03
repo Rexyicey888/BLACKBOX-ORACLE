@@ -1,6 +1,10 @@
 import { ensureSchema, getSql, hasDatabaseUrl } from "./_db.js";
 
 const MAX_TEXT_LENGTH = 1200;
+const ALLOW_PUBLIC_WRITES = process.env.NODE_ENV !== "production" && process.env.LISTINGS_PUBLIC_WRITES === "true";
+const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
+const TX_RE = /^0x[a-fA-F0-9]{64}$/;
+const PRICE_WEI_RE = /^\d+$/;
 
 function cleanText(value, fallback = "") {
   return String(value ?? fallback).trim().slice(0, MAX_TEXT_LENGTH);
@@ -9,6 +13,46 @@ function cleanText(value, fallback = "") {
 function cleanOptionalText(value) {
   const cleaned = cleanText(value);
   return cleaned || null;
+}
+
+function cleanAddress(value, field) {
+  const cleaned = cleanOptionalText(value);
+  if (!cleaned) return null;
+  if (!ADDRESS_RE.test(cleaned)) throw new Error(`${field} must be a valid EVM address.`);
+  return cleaned;
+}
+
+function cleanHash(value, field) {
+  const cleaned = cleanOptionalText(value);
+  if (!cleaned) return null;
+  if (!TX_RE.test(cleaned)) throw new Error(`${field} must be a valid transaction hash.`);
+  return cleaned;
+}
+
+function cleanPriceWei(value) {
+  const cleaned = cleanOptionalText(value);
+  if (!cleaned) return null;
+  if (!PRICE_WEI_RE.test(cleaned)) throw new Error("priceWei must be a base-10 wei value.");
+  return cleaned;
+}
+
+function cleanAccessMode(value) {
+  const cleaned = cleanOptionalText(value);
+  if (!cleaned) return null;
+  if (!["owner-only", "paid"].includes(cleaned)) throw new Error("accessMode must be owner-only or paid.");
+  return cleaned;
+}
+
+function cleanVaultUuid(value) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function cleanCreatedAt(value) {
+  if (!value) return new Date();
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) throw new Error("createdAt must be a valid date.");
+  return date;
 }
 
 function toListing(row) {
@@ -43,29 +87,62 @@ function validateListing(listing) {
 
   return {
     id,
-    owner: cleanOptionalText(listing.owner),
+    owner: cleanAddress(listing.owner, "owner"),
     title,
     category: cleanText(listing.category, "Private Data"),
     publicTease,
     priceLabel: cleanText(listing.priceLabel, "0.10 IP"),
     weirdness: cleanText(listing.weirdness, "A sealed answer that exists before anyone can see it."),
-    vaultUuid: Number.isFinite(Number(listing.vaultUuid)) ? Number(listing.vaultUuid) : null,
-    allocateTx: cleanOptionalText(listing.allocateTx),
-    writeTx: cleanOptionalText(listing.writeTx),
-    configureTx: cleanOptionalText(listing.configureTx),
-    buyTx: cleanOptionalText(listing.buyTx),
-    conditionContract: cleanOptionalText(listing.conditionContract),
-    priceWei: cleanOptionalText(listing.priceWei),
-    accessMode: cleanOptionalText(listing.accessMode),
-    createdAt: listing.createdAt ? new Date(listing.createdAt) : new Date(),
+    vaultUuid: cleanVaultUuid(listing.vaultUuid),
+    allocateTx: cleanHash(listing.allocateTx, "allocateTx"),
+    writeTx: cleanHash(listing.writeTx, "writeTx"),
+    configureTx: cleanHash(listing.configureTx, "configureTx"),
+    buyTx: cleanHash(listing.buyTx, "buyTx"),
+    conditionContract: cleanAddress(listing.conditionContract, "conditionContract"),
+    priceWei: cleanPriceWei(listing.priceWei),
+    accessMode: cleanAccessMode(listing.accessMode),
+    createdAt: cleanCreatedAt(listing.createdAt),
   };
+}
+
+function rejectPublicWrite(res) {
+  res.status(403).json({
+    error: "Public listing writes are disabled. Use local listings or enable signed/server-side publishing.",
+  });
 }
 
 export default async function handler(req, res) {
   res.setHeader("cache-control", "no-store");
 
   if (!hasDatabaseUrl()) {
-    res.status(503).json({ error: "DATABASE_URL is not configured." });
+    if (req.method === "GET") {
+      res.status(200).json({ listings: [], persistence: "disabled" });
+      return;
+    }
+
+    if (req.method === "POST") {
+      if (!ALLOW_PUBLIC_WRITES) {
+        rejectPublicWrite(res);
+        return;
+      }
+
+      const listing = validateListing(req.body?.listing ?? req.body);
+      res.status(200).json({ listing, persistence: "local-only" });
+      return;
+    }
+
+    if (req.method === "PATCH") {
+      if (!ALLOW_PUBLIC_WRITES) {
+        rejectPublicWrite(res);
+        return;
+      }
+
+      res.status(200).json({ listing: null, persistence: "local-only" });
+      return;
+    }
+
+    res.setHeader("Allow", "GET, POST, PATCH");
+    res.status(405).json({ error: "Method not allowed" });
     return;
   }
 
@@ -85,6 +162,11 @@ export default async function handler(req, res) {
     }
 
     if (req.method === "POST") {
+      if (!ALLOW_PUBLIC_WRITES) {
+        rejectPublicWrite(res);
+        return;
+      }
+
       const listing = validateListing(req.body?.listing ?? req.body);
       const rows = await sql`
         INSERT INTO blackbox_listings (
@@ -149,8 +231,13 @@ export default async function handler(req, res) {
     }
 
     if (req.method === "PATCH") {
+      if (!ALLOW_PUBLIC_WRITES) {
+        rejectPublicWrite(res);
+        return;
+      }
+
       const id = cleanText(req.body?.id);
-      const buyTx = cleanOptionalText(req.body?.buyTx);
+      const buyTx = cleanHash(req.body?.buyTx, "buyTx");
 
       if (!id) {
         res.status(400).json({ error: "Listing id is required." });

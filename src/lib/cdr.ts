@@ -194,6 +194,7 @@ export async function sealOwnerOnlySecret(params: {
 export async function sealPaidSecret(params: {
   account: Address;
   secret: string;
+  priceWei: bigint;
   conditionContract?: Address;
 }) {
   await ensureCdrWasm();
@@ -214,6 +215,13 @@ export async function sealPaidSecret(params: {
     readConditionData: conditionData,
   });
 
+  const { txHash: configureTx } = await configurePaidListing({
+    account: params.account,
+    uuid,
+    priceWei: params.priceWei,
+    conditionContract,
+  });
+
   const ciphertext = await client.uploader.encryptDataKey({
     dataKey: new TextEncoder().encode(params.secret),
     globalPubKey,
@@ -226,7 +234,7 @@ export async function sealPaidSecret(params: {
     encryptedData: toHex(ciphertext.raw),
   });
 
-  return { uuid, allocateTx, writeTx, conditionContract };
+  return { uuid, allocateTx, configureTx, writeTx, conditionContract };
 }
 
 export async function configurePaidListing(params: {
@@ -257,7 +265,7 @@ export async function configurePaidListing(params: {
 export async function buyPaidAccess(params: {
   account: Address;
   uuid: number;
-  priceWei: bigint;
+  owner: Address;
   conditionContract?: Address;
 }) {
   await ensureAeneidNetwork();
@@ -268,16 +276,39 @@ export async function buyPaidAccess(params: {
 
   const walletClient = getWalletClient(params.account);
   const publicClient = getPublicClient();
+  const listing = await publicClient.readContract({
+    address: conditionContract,
+    abi: blackBoxAccessConditionAbi,
+    functionName: "listings",
+    args: [params.uuid, params.owner],
+  });
+  const tuple = listing as { 0?: Address; 1?: bigint; 2?: boolean; owner?: Address; price?: bigint; active?: boolean };
+  const owner = tuple.owner ?? tuple[0];
+  const price = tuple.price ?? tuple[1];
+  const active = tuple.active ?? tuple[2];
+
+  if (owner?.toLowerCase() !== params.owner.toLowerCase()) {
+    throw new Error("This paid listing is not configured on-chain.");
+  }
+
+  if (!active) {
+    throw new Error("This paid listing is inactive.");
+  }
+
+  if (typeof price !== "bigint") {
+    throw new Error("Could not read the on-chain listing price.");
+  }
+
   const txHash = await walletClient.writeContract({
     address: conditionContract,
     abi: blackBoxAccessConditionAbi,
     functionName: "buyAccess",
-    args: [params.uuid],
-    value: params.priceWei,
+    args: [params.uuid, params.owner],
+    value: price,
   });
   await publicClient.waitForTransactionReceipt({ hash: txHash });
 
-  return { txHash };
+  return { txHash, priceWei: price };
 }
 
 export async function openOwnerOnlySecret(params: {

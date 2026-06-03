@@ -93,7 +93,7 @@ Important functions:
 - `deactivateListing`: creator pauses new purchases for a listing.
 - `reactivateListing`: creator turns purchases back on.
 - `revokeAccess`: creator removes one buyer's read access.
-- `buyAccess`: buyer pays the listing price and receives read access.
+- `buyAccess`: buyer pays the listing price for a specific vault owner and receives read access.
 - `checkWriteCondition`: CDR asks whether a caller may write to a vault.
 - `checkReadCondition`: CDR asks whether a caller may read a vault.
 
@@ -101,7 +101,7 @@ The design scopes `canRead` by `uuid`, `owner`, and `buyer`. This matters becaus
 
 `checkWriteCondition` deliberately decodes the owner from CDR `conditionData` instead of reading `listings[uuid]`. This is important because the app usually does not know the final CDR vault UUID until allocation succeeds. If write permission depended only on a listing that had to be configured before allocation, the paid flow could deadlock.
 
-`buyAccess` uses a simple reentrancy guard, grants access before payment/refund calls, sends only the configured price to the owner, and refunds excess payment.
+`buyAccess(uuid, owner)` uses a simple reentrancy guard, grants access before payment/refund calls, sends only the configured price to the owner, and refunds excess payment.
 
 ## Existing Build Status
 
@@ -127,26 +127,22 @@ http://127.0.0.1:4173
 
 ## Current Paid Access Status
 
-The paid access contract is compiled, deployed, verified, and wired into the app.
+The paid access contract is compiled and wired into the app. It must be redeployed after the June 2 security fix.
 
 - Network: Story Aeneid Testnet (`1315`)
 - Contract: `BlackBoxAccessCondition`
-- Address: `0x3eA6aeCd0B42300208D6d6880aA6CA16d5Ad91Bf`
-- Deployer: `0xce00961ffD3B6b957662297468F8fD72BFAfd9a6`
-- Deployment tx: `0x10bcfd34c8a486ea256162eaf4b577bad0130e5a34fa5cd1e0d648f6bbf2129f`
-- Sourcify: `https://repo.sourcify.dev/1315/0x3eA6aeCd0B42300208D6d6880aA6CA16d5Ad91Bf`
+- Address: set `VITE_BLACKBOX_CONDITION_ADDRESS` after redeploy
 
 Confirmed locally:
 
-- `.env` contains `VITE_BLACKBOX_CONDITION_ADDRESS`.
 - `npm.cmd run build` passes.
-- Story RPC returns bytecode at the configured contract address.
+- `npm.cmd run compile:contracts` passes.
 
 ## Public Deployment
 
 Production app:
 
-`https://hackathon-vert-kappa.vercel.app`
+`https://blackbox-oracle.vercel.app`
 
 The deployed app is HTTPS. To avoid mixed-content blocking from the plain HTTP Story API endpoint, production builds use:
 
@@ -180,7 +176,7 @@ Buyer:
 1. Switch MetaMask to the buyer account.
 2. Select the creator's live oracle.
 3. Click `Buy Access`.
-4. Approve `buyAccess(uuid)`.
+4. Approve `buyAccess(uuid, owner)`.
 5. Click `Request Decryption`.
 6. Confirm the private answer appears.
 
@@ -304,8 +300,8 @@ Current good signs:
 - React escapes visible user text by default
 - wallet interactions stay in browser wallet
 - app currently binds Vite preview to localhost
-- paid contract is deployed and verified
-- configured contract address has bytecode on Story Aeneid
+- paid contract source compiles
+- updated contract still needs redeploy before the final paid demo
 
 Known risks:
 
